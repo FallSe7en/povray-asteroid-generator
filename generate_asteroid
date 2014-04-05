@@ -1,0 +1,220 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use 5.014;
+
+# Generates asteroids.
+# Based on work by Jasper den Ouden (http://ojasper.nl/).
+
+use File::Temp qw/tempfile/;
+
+use Getopt::Std;
+getopts('o:w:h:c:a:l:s:r:v');
+our($opt_o, $opt_w, $opt_h, $opt_c, $opt_a, $opt_l, $opt_s, $opt_r, $opt_v);
+
+sub USAGE {
+    return <<HERE;
+
+USAGE:
+
+    $0 -o OUTPUT_FILENAME
+       [-w WIDTH] [-h HEIGHT] [-c CAMERA_POSITION] [-a ANGLE] [-l LIGHT_POSITION] [-s SIZE] [-r SEED]
+       [-v]
+
+        Required Parameters:
+
+        OUTPUT_FILENAME - Filename to deposit rendered asteroid into. Will be a .png file.
+
+        Optional Parameters:
+
+        WIDTH           - Width of generated image.
+            Default: 800
+        HEIGHT          - Height of generated image.
+            Default: 800
+        CAMERA_POSITION - Position of camera, given in 'x,y,z' format (ex. -c '17,0,0').
+            Default: 17,0,0
+        ANGLE           - Angle of view.
+            Default: 10
+        LIGHT_POSITION  - Position of light source, given in same format as CAMERA_POSITION.
+            Default: 500,500,800
+        SIZE            - Size of asteroid (valid range: 0.5 - 0.7).
+            Default: 0.5
+        SEED            - Seed for the psuedorandom number generator.
+            Default: undefined
+
+        -v              - Verbose mode. Prints the generated .pov file to STDOUT.
+HERE
+}
+
+die USAGE() unless $opt_o;
+
+my ($x, $y, $z)    = $opt_c ? split(/\s*,\s*/, $opt_c) : (17, 0, 0);
+my ($lx, $ly, $lz) = $opt_l ? split(/\s*,\s*/, $opt_l) : (500, 500, 800);
+
+my ($w, $h) = ($opt_w || 800, $opt_h || 800);
+
+my $angle = $opt_a || 10;
+my $size  = $opt_s || 0.5;
+
+my $to_png = $opt_o;
+
+my $seed = $opt_r ? srand($opt_r) : srand();
+
+sub random {
+    # An integer between 0 - 23767 (range of a signed 16-bit integer)
+    return int rand(32768);
+}
+
+my $pov_file_contents = <<HERE;
+#version 3.7;
+
+#include "colors.inc"
+#include "functions.inc"
+
+global_settings {
+    assumed_gamma 1.0
+    radiosity {
+        pretrace_start   0.08
+        pretrace_end     0.01
+        count            150
+        nearest_count    10
+        error_bound      0.5
+        recursion_limit  1
+        low_error_factor 0.5
+        gray_threshold   0.0
+        minimum_reuse    0.005
+        maximum_reuse    0.2
+        brightness       1
+        adc_bailout      0.005
+    }
+}
+
+camera {
+    location <$x, $y, $z>
+    look_at  0
+    angle    $angle
+}
+light_source { <$lx, $ly, $lz> White }
+
+#declare BASE_SHAPE = function {
+    sqrt(x*x + y*y + z*z) - 1
+}
+
+#declare CRATER_SHAPE_TEMPLATE = function {
+    pigment
+    {
+        crackle form <1.5,0,0>
+        color_map {
+            [ 0    rgb <1.0,1.0,1.0> ]
+            [ 0.75 rgb <0.0,0.0,0.0> ]
+            [ 1    rgb <0.2,0.2,0.2> ]
+        }
+        cubic_wave
+    }
+}
+
+#declare smooth_crater = function (p, xo) {
+    min(
+        p * p / (xo * (2 - xo)),
+        (2 * (p - xo) + xo) / (2 - xo)
+    )
+}
+
+#declare CRATER_SHAPE = function (x, y, z, S) {
+    smooth_crater(CRATER_SHAPE_TEMPLATE(x/S, y/S, z/S).red, 0.1)
+        * (
+            1 - 0.04 * sqrt(f_noise3d(
+                50 * (x + @{[ random() ]}),
+                40 * (y + @{[ random() ]}),
+                50 * (z + @{[ random() ]})
+            ))
+            / (0.04 + pow(CRATER_SHAPE_TEMPLATE(x/S, y/S, z/S).red, 2))
+        )
+}
+
+isosurface {
+    function {
+        BASE_SHAPE(x, y, z) - $size
+        + 0.5 * f_noise3d(
+            x/10 + @{[ random() ]},
+            y/10 + @{[ random() ]},
+            z/10 + @{[ random() ]}
+        )
+        + 0.2 * f_noise3d(
+            x + @{[ random() ]},
+            y + @{[ random() ]},
+            z + @{[ random() ]}
+        )
+        + 0.2 * f_noise3d(
+            x + @{[ random() ]},
+            y + @{[ random() ]},
+            z + @{[ random() ]}
+        )
+        + 0.2 * pow(f_noise3d(2*x, 2*y, 2*z), 2)
+        + 0.01 * f_noise3d(
+            20 * (x + @{[ random() ]}),
+            20 * (y + @{[ random() ]}),
+            20 * (z + @{[ random() ]})
+        )
+        + 0.04 * CRATER_SHAPE(
+            x + @{[ random() ]},
+            y + @{[ random() ]},
+            z + @{[ random() ]},
+            0.35
+        ) * (1 + f_noise3d(x + @{[ random() ]}, y + @{[ random() ]}, z + @{[ random() ]}))
+        + 0.01 * CRATER_SHAPE(
+            x + @{[ random() ]},
+            y + @{[ random() ]},
+            z + @{[ random() ]},
+            0.1
+        )
+    }
+    contained_by {
+        box { -1.2 1.2 }
+    }
+    threshold 0
+
+    max_gradient 2.0
+
+    texture {
+        pigment {
+            bozo
+            color_map {
+                [0 rgb <0.3,0.3,0.3>]
+                [1 rgb <1.0,1.0,1.0>]
+            }
+            scale 0.2
+        }
+        finish {
+            ambient    0.0
+            diffuse    1.0
+            brilliance 1.0
+            specular   0.1
+            roughness  0.08
+        }
+    }
+
+    normal
+    {
+        agate 0.13
+        scale 0.08
+    }
+}
+HERE
+
+my ($pov_file_fh, $pov_filename) = tempfile();
+
+print $pov_file_fh $pov_file_contents;
+close $pov_file_fh;
+
+print $pov_file_contents if $opt_v;
+
+system("povray -I$pov_filename -O$to_png +Q11 +A0.5 +W$w +H$h +UA");
+
+if ($?) {
+    print "Failed: povray exited with error code $?";
+} else {
+    print "Using seed: $seed\n";
+    print "Rendered to: $to_png";
+}
